@@ -1,23 +1,26 @@
 // The servicemanager process.
+#include "common/event_loop.h"
 #include "common/log.h"
 #include "common/paths.h"
-#include "common/stop_signal.h"
+#include "common/signal_fd.h"
 #include "ipc/rpc_server.h"
 #include "ipc/service_manager.h"
 
 using namespace mini;
 
 int main() {
-  installStopHandler();
+  SignalFd signals({SIGINT, SIGTERM});  // first, before any thread exists
   Result<Listener> listener = Listener::bind(serviceManagerSocketPath());
   if (!listener) {
     logError("servicemanager", "cannot listen on %s", serviceManagerSocketPath().c_str());
     return 1;
   }
+  EventLoop loop;
+  quitOnSignal(loop, signals);
   ServiceManager sm;
-  RpcServer server(listener.take(), sm);
+  RpcServer server(loop, listener.take(), sm);
   logInfo("servicemanager", "ready on %s", serviceManagerSocketPath().c_str());
-  while (!stopRequested()) server.serveOnce(500);
+  loop.run();
   logInfo("servicemanager", "stopping");
   return 0;
 }

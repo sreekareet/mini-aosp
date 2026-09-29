@@ -52,7 +52,10 @@ Result<std::unique_ptr<SocketRemote>> connectToServiceManager(
 Status registerService(const std::string& name, const std::string& socketPath,
                        std::chrono::milliseconds wait = std::chrono::milliseconds(0));
 
-// Look `name` up and connect to it. NotFound if nobody registered it.
+// Ask the ServiceManager where `name` lives (its socket path). NotFound if unregistered.
+Result<std::string> lookupService(const std::string& name);
+
+// lookupService + a blocking connection to it (for simple sync clients and tests).
 Result<std::unique_ptr<SocketRemote>> getServiceRemote(const std::string& name);
 
 }  // namespace mini

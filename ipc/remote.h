@@ -3,6 +3,7 @@
 // (later) an async connection. Real AOSP: IBinder::transact.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -12,12 +13,19 @@
 
 namespace mini {
 
+// Server-pushed message (subscription updates). Runs on the connection's loop thread.
+using EventHandler = std::function<void(uint32_t code, Parcel& args)>;
+
 class IRemote {
  public:
   virtual ~IRemote() = default;
   // Sends `data` as method `code` and waits for the reply. Errors from the callee
   // (e.g. NotFound) and transport errors (DeadObject) both come back as the Status.
   virtual Result<Parcel> transact(uint32_t code, const Parcel& data) = 0;
+
+  // Receive events pushed by the server. Only remotes with a background reader
+  // (RpcClient) can; a plain blocking SocketRemote has nowhere to deliver them.
+  virtual Status setEventHandler(EventHandler /*handler*/) { return Status::NotSupported; }
 };
 
 // Blocking, single-threaded remote over one connection.

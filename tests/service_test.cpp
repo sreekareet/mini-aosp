@@ -20,11 +20,14 @@ class VehicleProxyStubTest : public ::testing::Test {
     hal_ = std::make_unique<LoadedHal>(r.take());
     service_ = std::make_unique<VehicleService>(hal_->hal());
     stub_ = std::make_unique<VehicleStub>(*service_);
-    proxy_ = std::make_unique<VehicleServiceProxy>(std::make_unique<test::LoopbackRemote>(*stub_));
+    auto remote = std::make_unique<test::LoopbackRemote>(*stub_);
+    remote_ = remote.get();
+    proxy_ = std::make_unique<VehicleServiceProxy>(std::move(remote));
   }
   std::unique_ptr<LoadedHal> hal_;
   std::unique_ptr<VehicleService> service_;
   std::unique_ptr<VehicleStub> stub_;
+  test::LoopbackRemote* remote_ = nullptr;  // owned by proxy_
   std::unique_ptr<VehicleServiceProxy> proxy_;
 };
 }  // namespace
@@ -53,6 +56,57 @@ TEST_F(VehicleProxyStubTest, TruncatedRequestIsBadParcel) {
   Parcel tooShort;  // kSetProperty wants an id and a value
   tooShort.writeInt32(static_cast<int32_t>(PropertyId::Gear));
   EXPECT_EQ(remote.transact(kSetProperty, tooShort).status(), Status::BadParcel);
+}
+
+namespace {
+struct RecordingListener final : IPropertyListener {
+  void onPropertyChanged(PropertyId id, const PropValue& v) override { events.emplace_back(id, v); }
+  std::vector<std::pair<PropertyId, PropValue>> events;
+};
+}  // namespace
+
+TEST_F(VehicleProxyStubTest, SubscribedListenerSeesChangesUntilUnsubscribed) {
+  auto listener = std::make_shared<RecordingListener>();
+  ASSERT_EQ(proxy_->subscribe(PropertyId::HvacTemp, listener), Status::Ok);
+
+  proxy_->setProperty(PropertyId::HvacTemp, 22.0f);
+  proxy_->setProperty(PropertyId::Gear, int32_t{2});  // different property: not delivered
+  ASSERT_EQ(listener->events.size(), 1u);
+  EXPECT_EQ(listener->events[0].first, PropertyId::HvacTemp);
+  EXPECT_FLOAT_EQ(std::get<float>(listener->events[0].second), 22.0f);
+
+  ASSERT_EQ(proxy_->unsubscribe(PropertyId::HvacTemp, listener), Status::Ok);
+  proxy_->setProperty(PropertyId::HvacTemp, 23.0f);
+  EXPECT_EQ(listener->events.size(), 1u);
+  EXPECT_EQ(proxy_->unsubscribe(PropertyId::HvacTemp, listener), Status::NotFound);
+}
+
+TEST_F(VehicleProxyStubTest, SubscribeToUnknownPropertyFails) {
+  auto listener = std::make_shared<RecordingListener>();
+  EXPECT_EQ(proxy_->subscribe(static_cast<PropertyId>(99), listener), Status::NotFound);
+  EXPECT_EQ(proxy_->subscribe(PropertyId::Gear, nullptr), Status::InvalidArgument);
+}
+
+TEST_F(VehicleProxyStubTest, TwoListenersOnOnePropertyShareOneServerSubscription) {
+  auto a = std::make_shared<RecordingListener>();
+  auto b = std::make_shared<RecordingListener>();
+  ASSERT_EQ(proxy_->subscribe(PropertyId::Gear, a), Status::Ok);
+  ASSERT_EQ(proxy_->subscribe(PropertyId::Gear, b), Status::Ok);
+  proxy_->setProperty(PropertyId::Gear, int32_t{1});
+  EXPECT_EQ(a->events.size(), 1u);
+  EXPECT_EQ(b->events.size(), 1u);
+  ASSERT_EQ(proxy_->unsubscribe(PropertyId::Gear, a), Status::Ok);
+  proxy_->setProperty(PropertyId::Gear, int32_t{2});
+  EXPECT_EQ(a->events.size(), 1u);
+  EXPECT_EQ(b->events.size(), 2u);  // b still subscribed
+}
+
+TEST_F(VehicleProxyStubTest, ClientGoneDropsItsSubscriptions) {
+  auto listener = std::make_shared<RecordingListener>();
+  ASSERT_EQ(proxy_->subscribe(PropertyId::Gear, listener), Status::Ok);
+  remote_->disconnect();  // the stub is told the connection closed
+  proxy_->setProperty(PropertyId::Gear, int32_t{1});
+  EXPECT_TRUE(listener->events.empty());
 }
 
 // The real thing: separate processes talking over real sockets.

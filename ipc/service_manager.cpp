@@ -90,10 +90,14 @@ Status registerService(const std::string& name, const std::string& socketPath,
   return ServiceManagerProxy(remote.take()).addService(name, socketPath);
 }
 
-Result<std::unique_ptr<SocketRemote>> getServiceRemote(const std::string& name) {
+Result<std::string> lookupService(const std::string& name) {
   auto sm = connectToServiceManager();
   if (!sm) return sm.status();
-  Result<std::string> path = ServiceManagerProxy(sm.take()).getService(name);
+  return ServiceManagerProxy(sm.take()).getService(name);
+}
+
+Result<std::unique_ptr<SocketRemote>> getServiceRemote(const std::string& name) {
+  Result<std::string> path = lookupService(name);
   if (!path) return path.status();
   return SocketRemote::connect(path.value());
 }

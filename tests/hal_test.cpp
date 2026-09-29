@@ -37,6 +37,34 @@ TEST_F(HalTest, RejectsBadWrites) {
   EXPECT_FALSE(hal().get(static_cast<PropertyId>(99)).ok());
 }
 
+TEST_F(HalTest, SetNotifiesOnlyWhenTheValueChanges) {
+  std::vector<PropertyId> changed;
+  hal().setChangeCallback([&](PropertyId id, const PropValue&) { changed.push_back(id); });
+  hal().set(PropertyId::HvacTemp, 25.0f);
+  hal().set(PropertyId::HvacTemp, 25.0f);  // same value again: no event
+  EXPECT_EQ(changed, std::vector<PropertyId>{PropertyId::HvacTemp});
+  hal().setChangeCallback(nullptr);
+}
+
+TEST_F(HalTest, PollDrivesTheCarOnlyInDrive) {
+  std::vector<float> speeds;
+  hal().setChangeCallback([&](PropertyId id, const PropValue& v) {
+    if (id == PropertyId::Speed) speeds.push_back(std::get<float>(v));
+  });
+  hal().poll();  // in Park: nothing moves
+  EXPECT_TRUE(speeds.empty());
+
+  hal().set(PropertyId::Gear, int32_t{3});
+  hal().poll();
+  hal().poll();
+  EXPECT_EQ(speeds, (std::vector<float>{5.0f, 10.0f}));
+
+  hal().set(PropertyId::Gear, int32_t{0});  // back to Park: coasts down
+  hal().poll();
+  EXPECT_EQ(speeds.back(), 5.0f);
+  hal().setChangeCallback(nullptr);
+}
+
 TEST(HalLoaderTest, MissingLibraryFails) {
   EXPECT_EQ(LoadedHal::load("/no/such/lib.so").status(), Status::IoError);
 }

@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -92,6 +93,9 @@ inline std::optional<PropValue> parseValue(ValueType type, std::string_view text
   return std::nullopt;
 }
 
+// Called by the HAL whenever a property's value changes.
+using PropertyChangeCallback = std::function<void(PropertyId id, const PropValue& value)>;
+
 // Abstract interface with a virtual destructor, so implementations can be
 // destroyed through a base pointer.
 class IVehicleHal {
@@ -103,7 +107,14 @@ class IVehicleHal {
   // NotFound: unknown id. ReadOnly: not writable. InvalidArgument: wrong type/range.
   virtual Status set(PropertyId id, const PropValue& value) = 0;
 
-  // TODO(stage 3): change callbacks and poll() so the service can push events.
+  // Register (or clear, with nullptr) the change callback. Real HALs call it from
+  // their own thread; this fake calls it from set() and poll(), on the caller's thread.
+  virtual void setChangeCallback(PropertyChangeCallback callback) = 0;
+
+  // Give the HAL a chance to do periodic work (the fake HAL drives its simulation
+  // here). The service calls this from a timer. Not thread-safe with the methods above:
+  // callers must use the HAL from one thread.
+  virtual void poll() = 0;
 };
 
 // ---- Plugin ABI -----------------------------------------------------------
@@ -112,7 +123,7 @@ class IVehicleHal {
 // The interface itself is a C++ virtual class, so plugin and loader must be built
 // with the same compiler/stdlib. (Real HALs solve this with AIDL/Binder; a C ABI
 // or PIMPL is the other classic answer - see docs/stages/stage-1.md.)
-inline constexpr int kVehicleHalAbiVersion = 1;
+inline constexpr int kVehicleHalAbiVersion = 2;  // 2: added setChangeCallback() and poll()
 inline constexpr const char* kSymAbiVersion = "vehicleHalAbiVersion";
 inline constexpr const char* kSymCreate = "createVehicleHal";
 inline constexpr const char* kSymDestroy = "destroyVehicleHal";

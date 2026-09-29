@@ -94,7 +94,7 @@ Death notification and identity arrive in stage 5.
 
 ## 7. Exercises
 
-1. **Add a method.** Add `getFuelPercent()`-style helper: add code `kGetAll = 4` returning all values at once. Touch `vehicle_iface.h`, the proxy, the stub, and add a test using `LoopbackRemote`. Expected: `service_tests` passes; `vehicle_cli` unchanged.
+1. **Add a method.** Add a `kGetAll = 4` transaction that returns every property's value in one call. Touch `vehicle_iface.h`, the proxy, the stub, and add a test using `LoopbackRemote`. Expected: `service_tests` passes; `vehicle_cli` unchanged.
 2. **Watch the wire.** Run `strace -f -e trace=sendto,recvfrom,send,recv ./build/bin/vehicle_cli get gear` (with the service running) and find the frame: 4-byte length then Call (0), code (1), property id (3). Expected: 12-byte payload.
 3. **Kill the service on purpose.** Start servicemanager and vehicle_service, `kill -9` the service, run `vehicle_cli get gear`. Expected: `cannot reach vehicle service: DeadObject` (stale socket file, connection refused). A graceful `kill` (SIGTERM) instead removes the socket, giving `NotFound`. Why the difference?
 4. **Register a second service.** Write a tiny `echo_service` (stub with one method that returns its string argument) and a client that finds it via `getServiceRemote`. Expected: both services appear in the ServiceManager list.

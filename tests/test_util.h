@@ -90,20 +90,40 @@ inline bool fileExists(const std::string& p) { return ::access(p.c_str(), F_OK) 
 
 // An IRemote that calls a stub in the same process. Every call still goes through the
 // real wire encoding, so proxy + stub marshalling is tested without any sockets.
+// Events pushed by the stub are delivered synchronously to the event handler.
 class LoopbackRemote final : public IRemote {
  public:
   explicit LoopbackRemote(IStub& stub) : stub_(stub) {}
+
   Result<Parcel> transact(uint32_t code, const Parcel& data) override {
     Parcel call = makeCall(code, data);
     Result<uint32_t> c = parseCall(call);
     if (!c) return c.status();
+
+    CallerInfo caller;
+    caller.connection = 1;
+    caller.sendEvent = [this](uint32_t evCode, const Parcel& args) {
+      Parcel frame = makeEvent(evCode, args);
+      Result<uint32_t> ev = parseEvent(frame);
+      if (!ev || !handler_) return Status::NotFound;
+      handler_(ev.value(), frame);
+      return Status::Ok;
+    };
     Parcel reply;
-    Status s = stub_.onTransact(c.value(), call, reply, CallerInfo{1});
+    Status s = stub_.onTransact(c.value(), call, reply, caller);
     return parseReply(makeReply(s, reply));
   }
 
+  Status setEventHandler(EventHandler handler) override {
+    handler_ = std::move(handler);
+    return Status::Ok;
+  }
+
+  void disconnect() { stub_.onClientGone(1); }  // simulate the client dying
+
  private:
   IStub& stub_;
+  EventHandler handler_;
 };
 
 }  // namespace mini::test

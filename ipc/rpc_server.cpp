@@ -1,10 +1,5 @@
 #include "ipc/rpc_server.h"
 
-#include <poll.h>
-
-#include <cerrno>
-#include <vector>
-
 #include "common/log.h"
 #include "ipc/wire.h"
 
@@ -14,33 +9,31 @@ namespace {
 constexpr const char* kTag = "RpcServer";
 }
 
-void RpcServer::serveOnce(int timeoutMs) {
-  std::vector<pollfd> fds;
-  std::vector<ConnectionId> ids;  // ids[i] belongs to fds[i + 1]
-  fds.push_back({listener_.fd(), POLLIN, 0});
-  for (const auto& [id, conn] : clients_) {
-    fds.push_back({conn.fd(), POLLIN, 0});
-    ids.push_back(id);
-  }
-
-  if (::poll(fds.data(), fds.size(), timeoutMs) <= 0) return;  // timeout or EINTR (signal)
-
-  if (fds[0].revents & POLLIN) acceptClients();
-
-  std::vector<ConnectionId> dead;
-  for (size_t i = 0; i < ids.size(); ++i) {
-    if (fds[i + 1].revents == 0) continue;
-    if (!serveClient(ids[i], clients_.at(ids[i]))) dead.push_back(ids[i]);
-  }
-  for (ConnectionId id : dead) clients_.erase(id);  // Connection's destructor closes the fd
+RpcServer::RpcServer(EventLoop& loop, Listener listener, IStub& stub)
+    : loop_(loop), listener_(std::move(listener)), stub_(stub) {
+  Status s = loop_.addFd(listener_.fd(), EPOLLIN, [this](uint32_t) { onListenerReadable(); });
+  if (s != Status::Ok) logError(kTag, "cannot watch listener: %s", toString(s));
 }
 
-void RpcServer::acceptClients() {
+RpcServer::~RpcServer() {
+  loop_.removeFd(listener_.fd());
+  for (const auto& [id, conn] : clients_) loop_.removeFd(conn.fd());
+}
+
+void RpcServer::onListenerReadable() {
   for (;;) {
     Result<Connection> c = listener_.accept();
     if (!c) return;  // WouldBlock: no more pending clients
-    clients_.emplace(nextId_++, c.take());
+    ConnectionId id = nextId_++;
+    auto it = clients_.emplace(id, c.take()).first;
+    loop_.addFd(it->second.fd(), EPOLLIN, [this, id](uint32_t) { onClientReadable(id); });
   }
+}
+
+void RpcServer::onClientReadable(ConnectionId id) {
+  auto it = clients_.find(id);
+  if (it == clients_.end()) return;
+  if (!serveClient(id, it->second)) dropClient(id);
 }
 
 bool RpcServer::serveClient(ConnectionId id, Connection& conn) {
@@ -54,14 +47,33 @@ bool RpcServer::serveClient(ConnectionId id, Connection& conn) {
 
     Parcel call = frame.take();
     Result<uint32_t> code = parseCall(call);
+    CallerInfo caller;
+    caller.connection = id;
+    caller.sendEvent = [this, id](uint32_t evCode, const Parcel& args) {
+      return sendEvent(id, evCode, args);
+    };
     Parcel reply;
-    Status status = code ? stub_.onTransact(code.value(), call, reply, CallerInfo{id})
-                         : Status::BadParcel;
+    Status status = code ? stub_.onTransact(code.value(), call, reply, caller) : Status::BadParcel;
     if (conn.sendFrame(makeReply(status, reply)) != Status::Ok) return false;
   }
 
   // Frames that arrived just before EOF were answered above; now drop the client.
   return fillStatus == Status::Ok || fillStatus == Status::WouldBlock;
+}
+
+void RpcServer::dropClient(ConnectionId id) {
+  auto it = clients_.find(id);
+  if (it == clients_.end()) return;
+  loop_.removeFd(it->second.fd());
+  clients_.erase(it);  // closes the socket
+  stub_.onClientGone(id);
+}
+
+Status RpcServer::sendEvent(ConnectionId id, uint32_t code, const Parcel& args) {
+  auto it = clients_.find(id);
+  if (it == clients_.end()) return Status::NotFound;
+  // A dead or stuck client is not fatal here: its read side notices and drops it.
+  return it->second.sendFrame(makeEvent(code, args));
 }
 
 }  // namespace mini

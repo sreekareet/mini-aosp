@@ -56,3 +56,29 @@ made where the brief was ambiguous are marked **Assumption**.
 - **Single-threaded `poll()` server** for stage 2, as the brief requires; replaced by the epoll event loop in stage 3.
 - **Accepted limitation:** the ServiceManager never learns that a service died, so a stale
   entry stays until the name is re-registered. Clients see `NotFound`/`DeadObject` when connecting. Stage 5 handles reconnect.
+
+## Stage 3: Framework, event loop, subscriptions
+
+- **`EventLoop` lives in `common/`** (not `framework/` as the brief's layout suggests):
+  `ipc` depends on it and must not depend on the layer above. AOSP's `Looper` is in `libutils` for the same reason.
+- **epoll + eventfd + a timer map** (no `timerfd`): the timeout for `epoll_wait` is computed from
+  the earliest timer. Fewer fds and less code than one timerfd per timer.
+- **One loop thread, callbacks never overlap** (Looper model). Servers are lock-free because
+  all their state is confined to that thread. Alternative: a thread pool (stage 6 exercises).
+- **Events share the client connection; `RpcClient` demultiplexes** replies from events with a reader on the loop.
+  Alternative: dedicated event socket. One call in flight per client (no call ids).
+- **`RpcClient::transact` returns `IllegalState` on the loop thread** rather than deadlocking; **timeouts close the connection** (5 s).
+- **`weak_ptr` capture in the loop callback** so a callback racing with client destruction is harmless.
+- **Callback interface `IPropertyListener` with `shared_ptr`** across the service boundary: the caller
+  and the service both keep it alive (the `sp<>` role). App-level API uses `std::function` instead.
+- **Subscription semantics:** events fire only when the value *changes*; the server keeps one
+  subscription per (connection, property) and the proxy fans out to any number of local listeners.
+- **`IStub::onClientGone`** removes a dead client's subscriptions (stand-in for `linkToDeath`).
+- **HAL contract change (ABI 2):** `setChangeCallback` + `poll()`. `poll()` exists so the fake HAL
+  can simulate driving without owning a thread; a real HAL would call the callback from its own thread.
+- **Typed `PropertyKey<T>`** with an untyped fallback API for generic tools.
+- **Assumption:** the fake HAL simulates the car: gear D (3) accelerates 5 km/h per 200 ms tick to 60, other gears
+  decelerate to 0, fuel drains 0.05% per tick while moving.
+- **Sanitizers:** `MINI_AOSP_SANITIZER=address|thread`. Suites pass under both (locking design is in `stage-3.md`).
+- **Accepted limitation:** a client that stops reading its socket can stall the service for up to 1 s per
+  event (`sendFrame` waits, then drops the connection). A real system would queue per client.

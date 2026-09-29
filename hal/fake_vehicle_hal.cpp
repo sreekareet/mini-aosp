@@ -1,4 +1,5 @@
 // The "vendor" side: a fake car, built as libfake_vehicle_hal.so.
+#include <algorithm>
 #include <map>
 #include <memory>
 
@@ -37,8 +38,26 @@ class FakeVehicleHal final : public IVehicleHal {
     if (std::optional<double> d = numeric(value)) {
       if (*d < e.min || *d > e.max) return Status::InvalidArgument;
     }
-    e.value = value;
+    update(e, value);
     return Status::Ok;
+  }
+
+  void setChangeCallback(PropertyChangeCallback callback) override {
+    callback_ = std::move(callback);
+  }
+
+  // A tiny driving simulation: in Drive the car eases up to 60 km/h, otherwise it
+  // coasts to a stop; fuel drains while moving. Emits changes through the callback.
+  void poll() override {
+    Entry& speed = props_.at(PropertyId::Speed);
+    Entry& fuel = props_.at(PropertyId::FuelLevel);
+    bool inDrive = std::get<int32_t>(props_.at(PropertyId::Gear).value) == kGearDrive;
+
+    float current = std::get<float>(speed.value);
+    float target = inDrive ? 60.0f : 0.0f;
+    float step = std::clamp(target - current, -5.0f, 5.0f);
+    update(speed, current + step);
+    if (current > 0.0f) update(fuel, std::max(0.0f, std::get<float>(fuel.value) - 0.05f));
   }
 
  private:
@@ -48,6 +67,13 @@ class FakeVehicleHal final : public IVehicleHal {
     double min;
     double max;
   };
+
+  // Store a new value and tell the listener, but only if it really changed.
+  void update(Entry& e, const PropValue& value) {
+    if (e.value == value) return;
+    e.value = value;
+    if (callback_) callback_(e.config.id, value);
+  }
 
   void add(PropertyConfig config, PropValue initial, double min, double max) {
     props_[config.id] = Entry{config, initial, min, max};
@@ -60,7 +86,10 @@ class FakeVehicleHal final : public IVehicleHal {
     return std::nullopt;
   }
 
+  static constexpr int32_t kGearDrive = 3;
+
   std::map<PropertyId, Entry> props_;
+  PropertyChangeCallback callback_;
 };
 
 }  // namespace

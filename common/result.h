@@ -23,6 +23,8 @@ enum class Status : int32_t {
   BadParcel,           // malformed or truncated message
   UnknownTransaction,  // the service does not know this method code
   WouldBlock,          // non-blocking I/O: nothing to do right now
+  Timeout,             // a call got no reply in time
+  IllegalState,        // the call is not allowed right now (e.g. would deadlock)
 };
 
 inline const char* toString(Status s) {
@@ -37,6 +39,8 @@ inline const char* toString(Status s) {
     case Status::BadParcel: return "BadParcel";
     case Status::UnknownTransaction: return "UnknownTransaction";
     case Status::WouldBlock: return "WouldBlock";
+    case Status::Timeout: return "Timeout";
+    case Status::IllegalState: return "IllegalState";
   }
   return "Unknown";
 }

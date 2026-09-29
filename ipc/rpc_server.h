@@ -1,28 +1,33 @@
-// Serves one IStub on a Unix socket. Single-threaded: one poll() loop handles the
-// listening socket and every client connection.
-// TODO(stage 3): replace the hand-written poll() with the shared epoll EventLoop.
+// Serves one IStub on a Unix socket, driven by an EventLoop: the listening socket
+// and every client connection are fds registered on the loop.
 #pragma once
 
 #include <map>
 
+#include "common/event_loop.h"
 #include "ipc/stub.h"
 #include "ipc/transport.h"
 
 namespace mini {
 
+// All work happens on the loop thread, so the server and the stub it calls need no
+// locks. Destroy the server only when the loop is not running (or from the loop
+// thread): its fd callbacks capture `this`.
 class RpcServer {
  public:
-  RpcServer(Listener listener, IStub& stub) : listener_(std::move(listener)), stub_(stub) {}
-
-  // Wait up to timeoutMs for activity, then handle everything that is ready.
-  // Call it in a loop; between calls the caller can check its stop flag.
-  void serveOnce(int timeoutMs);
+  RpcServer(EventLoop& loop, Listener listener, IStub& stub);
+  ~RpcServer();
+  RpcServer(const RpcServer&) = delete;
+  RpcServer& operator=(const RpcServer&) = delete;
 
  private:
-  void acceptClients();
-  // Returns false if the connection should be dropped.
-  bool serveClient(ConnectionId id, Connection& conn);
+  void onListenerReadable();
+  void onClientReadable(ConnectionId id);
+  bool serveClient(ConnectionId id, Connection& conn);  // false: drop this client
+  void dropClient(ConnectionId id);
+  Status sendEvent(ConnectionId id, uint32_t code, const Parcel& args);
 
+  EventLoop& loop_;
   Listener listener_;
   IStub& stub_;
   std::map<ConnectionId, Connection> clients_;
