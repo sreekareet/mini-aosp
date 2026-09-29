@@ -1,3 +1,3 @@
-add_library(framework STATIC property_manager.cpp)
-target_link_libraries(framework PUBLIC vehicle_iface)
+add_library(framework STATIC property_manager.cpp system_properties.cpp)
+target_link_libraries(framework PUBLIC vehicle_iface property_lib)
 mini_aosp_warnings(framework)

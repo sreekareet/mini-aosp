@@ -82,3 +82,21 @@ made where the brief was ambiguous are marked **Assumption**.
 - **Sanitizers:** `MINI_AOSP_SANITIZER=address|thread`. Suites pass under both (locking design is in `stage-3.md`).
 - **Accepted limitation:** a client that stops reading its socket can stall the service for up to 1 s per
   event (`sendFrame` waits, then drops the connection). A real system would queue per client.
+
+## Stage 4: Init and properties
+
+- **`init` is an ordinary process, not PID 1** (assumption): shutdown is SIGTERM; children are stopped
+  in reverse start order and force-killed after 3 s. If init is SIGKILLed its children are orphaned (accepted).
+- **Config language: three directives plus two service options** (`setprop`, `service`, `oneshot`,
+  `restart_delay`). Parse errors carry line numbers. Alternative: reuse a real format (JSON/INI); a
+  line-oriented file resembles `init.rc` and needs no dependency. Not implemented: triggers, classes (exercise).
+- **Property service hosted in init**, reusing `RpcServer`/`EventLoop`; **reads also go through IPC** (real AOSP maps shared memory
+  for reads). Simpler; documented as a difference.
+- **Property rules:** keys `[A-Za-z0-9._-]` up to 64 chars, values up to 92, `ro.*` write-once. Plain map, no locking (single-threaded owner).
+- **Crash-loop protection:** 5 starts within 10 s -> `failed` permanently. Alternative: exponential backoff.
+- **`posix_spawn` with a reset signal mask** instead of fork/exec; **`signalfd`** for SIGCHLD/SIGINT/SIGTERM.
+- **Service state is published as `init.svc.<name>`/`init.svc_debug_pid.<name>`** (Android's names).
+- **Assumption:** a path without `/` in `init.conf` is relative to the init executable; the config is copied to `build/etc/init.conf`.
+- **Assumption:** `ChildProcess` in tests sends SIGTERM first, so test failures do not leave orphaned services.
+- **Accepted limitation:** services register with the ServiceManager once at startup, so a ServiceManager crash
+  is not recovered (init restarts it, but the registry is empty until services are restarted).

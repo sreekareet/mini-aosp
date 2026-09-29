@@ -17,7 +17,8 @@ function(mini_aosp_test name)
   add_executable(${name} ${T_SOURCES})
   target_link_libraries(${name} PRIVATE ${T_LIBS} GTest::gtest_main)
   target_compile_definitions(${name} PRIVATE
-    BIN_DIR="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}" LIB_DIR="${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+    BIN_DIR="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}" LIB_DIR="${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+    ETC_DIR="${CMAKE_BINARY_DIR}/etc")
   mini_aosp_warnings(${name})
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
@@ -34,3 +35,6 @@ add_dependencies(service_tests servicemanager vehicle_service fake_vehicle_hal)
 
 mini_aosp_test(framework_tests SOURCES framework_test.cpp LIBS framework vehicle_service_lib hal_loader)
 add_dependencies(framework_tests servicemanager vehicle_service fake_vehicle_hal)
+
+mini_aosp_test(init_tests SOURCES init_test.cpp LIBS init_lib framework vehicle_iface)
+add_dependencies(init_tests init servicemanager vehicle_service fake_vehicle_hal)

@@ -60,12 +60,26 @@ class ChildProcess {
     }
     return *this;
   }
-  ~ChildProcess() { stop(SIGKILL); }
+  // Ask politely first (SIGTERM lets init stop its children and servers unlink
+  // their sockets), then insist. Tests that want a crash call stop(SIGKILL) themselves.
+  ~ChildProcess() {
+    if (pid_ <= 0) return;
+    ::kill(pid_, SIGTERM);
+    for (int i = 0; i < 300; ++i) {  // up to 3 s
+      if (::waitpid(pid_, nullptr, WNOHANG) != 0) {
+        pid_ = -1;
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    stop(SIGKILL);
+  }
 
   pid_t pid() const { return pid_; }
+  void release() { pid_ = -1; }  // forget the process (e.g. the test already reaped it)
   bool started() const { return pid_ > 0; }
 
-  // Send a signal and wait for exit.
+  // Send a signal and wait (as long as it takes) for exit.
   void stop(int sig) {
     if (pid_ <= 0) return;
     ::kill(pid_, sig);

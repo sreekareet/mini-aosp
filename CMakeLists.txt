@@ -47,6 +47,7 @@ add_subdirectory(common)
 add_subdirectory(hal)
 add_subdirectory(ipc)
 add_subdirectory(services/vehicle)
+add_subdirectory(init)
 add_subdirectory(framework)
 add_subdirectory(apps)
 
