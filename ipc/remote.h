@@ -16,6 +16,10 @@ namespace mini {
 // Server-pushed message (subscription updates). Runs on the connection's loop thread.
 using EventHandler = std::function<void(uint32_t code, Parcel& args)>;
 
+// Called (once) when the process on the other end is gone. Runs on the connection's
+// loop thread: keep it short, and do not make synchronous calls from it.
+using DeathRecipient = std::function<void()>;
+
 class IRemote {
  public:
   virtual ~IRemote() = default;
@@ -26,6 +30,10 @@ class IRemote {
   // Receive events pushed by the server. Only remotes with a background reader
   // (RpcClient) can; a plain blocking SocketRemote has nowhere to deliver them.
   virtual Status setEventHandler(EventHandler /*handler*/) { return Status::NotSupported; }
+
+  // Ask to be told when the remote dies. DeadObject if it is already dead.
+  // Real AOSP: IBinder::linkToDeath + DeathRecipient::binderDied.
+  virtual Status linkToDeath(DeathRecipient /*recipient*/) { return Status::NotSupported; }
 };
 
 // Blocking, single-threaded remote over one connection.

@@ -5,6 +5,7 @@
 #include <set>
 #include <vector>
 
+#include "ipc/access_policy.h"
 #include "ipc/stub.h"
 #include "services/vehicle/vehicle_iface.h"
 
@@ -40,7 +41,10 @@ class VehicleService final : public IVehicleService {
 // Real AOSP: the generated BnVehicleService.
 class VehicleStub final : public IStub {
  public:
-  explicit VehicleStub(IVehicleService& impl) : impl_(impl) {}
+  // Anyone may read and subscribe; only `writers` may set properties. Real AOSP checks a
+  // per-property permission (e.g. CONTROL_CAR_CLIMATE) against the caller's uid.
+  explicit VehicleStub(IVehicleService& impl, UidAllowList writers = UidAllowList::anyone())
+      : impl_(impl), writers_(std::move(writers)) {}
 
   Status onTransact(uint32_t code, Parcel& data, Parcel& reply, const CallerInfo& caller) override;
   void onClientGone(ConnectionId connection) override;
@@ -54,6 +58,7 @@ class VehicleStub final : public IStub {
   };
 
   IVehicleService& impl_;
+  UidAllowList writers_;
   std::map<ConnectionId, ClientState> clients_;
 };
 

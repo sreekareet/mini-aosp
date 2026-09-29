@@ -26,6 +26,7 @@ class RpcClient final : public IRemote {
 
   Result<Parcel> transact(uint32_t code, const Parcel& data) override;
   Status setEventHandler(EventHandler handler) override;
+  Status linkToDeath(DeathRecipient recipient) override;
 
  private:
   struct State;  // shared with the loop callback, which holds only a weak_ptr to it

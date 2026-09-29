@@ -1,9 +1,23 @@
 #include "init/property_service.h"
 
+#include "common/log.h"
+
 namespace mini {
 
+namespace {
+bool startsWith(const std::string& s, const char* prefix) { return s.rfind(prefix, 0) == 0; }
+}  // namespace
+
+bool canSetProperty(const std::string& key, uid_t callerUid, uid_t ownerUid) {
+  if (startsWith(key, "ro.") || startsWith(key, "init.svc.") || startsWith(key, "init.svc_debug_pid.")) {
+    return false;
+  }
+  if (startsWith(key, "sys.") || startsWith(key, "debug.")) return true;
+  return callerUid == 0 || callerUid == ownerUid;
+}
+
 Status PropertyServiceStub::onTransact(uint32_t code, Parcel& data, Parcel& reply,
-                                       const CallerInfo& /*caller*/) {
+                                       const CallerInfo& caller) {
   switch (code) {
     case kGetProp: {
       std::string key = data.readString();
@@ -17,6 +31,11 @@ Status PropertyServiceStub::onTransact(uint32_t code, Parcel& data, Parcel& repl
       std::string key = data.readString();
       std::string value = data.readString();
       if (!data.ok()) return Status::BadParcel;
+      if (!canSetProperty(key, caller.uid, ownerUid_)) {
+        logWarn("property_service", "uid %d (pid %d) may not set '%s'", static_cast<int>(caller.uid),
+                static_cast<int>(caller.pid), key.c_str());
+        return Status::PermissionDenied;
+      }
       return store_.set(key, value);
     }
     case kListProps: {

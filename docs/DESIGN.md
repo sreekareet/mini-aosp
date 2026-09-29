@@ -100,3 +100,25 @@ made where the brief was ambiguous are marked **Assumption**.
 - **Assumption:** `ChildProcess` in tests sends SIGTERM first, so test failures do not leave orphaned services.
 - **Accepted limitation:** services register with the ServiceManager once at startup, so a ServiceManager crash
   is not recovered (init restarts it, but the registry is empty until services are restarted).
+
+## Stage 5: Robustness
+
+- **Death is detected by the connection closing** (EOF/HUP on the loop), surfaced as `IRemote::linkToDeath`. No heartbeat protocol; a
+  hung-but-alive service is not detected (calls just time out after 5 s and close the connection).
+- **Reconnect lives in `PropertyManager`**, on a dedicated worker thread, with 100 ms -> 2 s exponential backoff. The death callback
+  (loop thread) only records the event, because reconnecting needs synchronous calls, which are forbidden on the loop thread.
+- **The manager owns subscriptions, not the connection**, and replays them on every new connection. Calls fail fast with `DeadObject` while
+  disconnected. State inside the restarted service is *not* restored (documented; apps must tolerate resets).
+- **Concurrency design for reconnect:** `subscriptionMutex_` (subscribe/unsubscribe/reconnect) before `mutex_` (connection state);
+  per-connection `Attempt` tokens so a stale death notice cannot tear down a healthy connection; death recipient registered *before* the
+  connection is used, and re-checked at install time. Stress-tested under TSan (25 repeats).
+- **API ordering guarantee is deliberately weak:** `isConnected()`/calls may succeed slightly before the `connected=true` callback is delivered (documented on the header).
+- **Identity: `SO_PEERCRED` read once at accept.** Alternative: per-message identity (Binder). Pitfalls (fd passing, pid reuse) are in the study notes.
+- **Permissions: uid allow-lists, fail closed, checked before any work.** `UidAllowList`: root always allowed, empty list = root only.
+  Alternative: named permissions plus a policy service (closer to Android, much larger).
+- **Policies chosen (assumptions):** vehicle *writes* need an allowed uid (default: the user running the service; `--allow-writer` overrides), reads and
+  subscriptions are open; ServiceManager `addService` only for its owner/root; properties: `ro.*`/`init.svc.*` never via IPC, `sys.*`/`debug.*` anyone, else owner/root.
+- **Sockets stay mode 0666** so other uids can connect and be *refused by the service* (the Binder model).
+- **Accepted limitations:** ServiceManager restart empties the registry and services do not re-register; a HAL crash kills the service (passthrough
+  HAL); no `clearCallingIdentity` equivalent because services never call onward on a client's behalf; the cross-uid path could not be tested with a real second user in the
+  development environment (the same code path is covered by an end-to-end test using an allow-list that excludes the test's own uid).

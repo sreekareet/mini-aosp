@@ -109,6 +109,23 @@ TEST_F(VehicleProxyStubTest, ClientGoneDropsItsSubscriptions) {
   EXPECT_TRUE(listener->events.empty());
 }
 
+TEST_F(VehicleProxyStubTest, OnlyAllowedWritersMaySetProperties) {
+  VehicleStub guarded(*service_, UidAllowList::only({42}));
+  auto remote = std::make_unique<test::LoopbackRemote>(guarded);
+  test::LoopbackRemote* raw = remote.get();
+  VehicleServiceProxy proxy(std::move(remote));
+
+  raw->setCaller(43);  // not on the list
+  EXPECT_EQ(proxy.setProperty(PropertyId::HvacTemp, 25.0f), Status::PermissionDenied);
+  EXPECT_FLOAT_EQ(std::get<float>(proxy.getProperty(PropertyId::HvacTemp).value()), 21.0f);  // unchanged
+  auto listener = std::make_shared<RecordingListener>();
+  EXPECT_EQ(proxy.subscribe(PropertyId::HvacTemp, listener), Status::Ok);  // reading is open
+
+  raw->setCaller(42);
+  EXPECT_EQ(proxy.setProperty(PropertyId::HvacTemp, 25.0f), Status::Ok);
+  EXPECT_EQ(listener->events.size(), 1u);
+}
+
 // The real thing: separate processes talking over real sockets.
 TEST(EndToEndTest, ClientToServiceAcrossProcesses) {
   test::TempRunDir run;
@@ -135,4 +152,42 @@ TEST(EndToEndTest, ClientToServiceAcrossProcesses) {
   // Kill the service: the next call must fail cleanly, not hang or crash us.
   vehicle.stop(SIGKILL);
   EXPECT_EQ(proxy.getProperty(PropertyId::Gear).status(), Status::DeadObject);
+}
+
+// The whole identity path: kernel SO_PEERCRED -> RpcServer -> CallerInfo -> stub policy.
+TEST(EndToEndTest, ServiceRefusesWritesFromAnUnlistedUid) {
+  if (::geteuid() == 0) GTEST_SKIP() << "root is always allowed";
+  test::TempRunDir run;
+  test::ChildProcess sm(std::string(BIN_DIR) + "/servicemanager");
+  ASSERT_TRUE(test::waitFor([&] { return test::fileExists(serviceManagerSocketPath()); }));
+  // Only uid 12345 (and root) may write - we are neither.
+  test::ChildProcess vehicle(std::string(BIN_DIR) + "/vehicle_service",
+                             {"--hal", kHalPath, "--allow-writer", "12345"});
+
+  Result<std::unique_ptr<SocketRemote>> remote = Status::NotFound;
+  ASSERT_TRUE(test::waitFor([&] {
+    remote = getServiceRemote(kVehicleServiceName);
+    return remote.ok();
+  }));
+  VehicleServiceProxy proxy(remote.take());
+  EXPECT_EQ(proxy.setProperty(PropertyId::Gear, int32_t{3}), Status::PermissionDenied);
+  auto gear = proxy.getProperty(PropertyId::Gear);
+  ASSERT_TRUE(gear.ok());  // reads still work
+  EXPECT_EQ(std::get<int32_t>(gear.value()), 0);
+}
+
+// By default the user who runs the service may write.
+TEST(EndToEndTest, DefaultPolicyAllowsTheServiceOwner) {
+  test::TempRunDir run;
+  test::ChildProcess sm(std::string(BIN_DIR) + "/servicemanager");
+  ASSERT_TRUE(test::waitFor([&] { return test::fileExists(serviceManagerSocketPath()); }));
+  test::ChildProcess vehicle(std::string(BIN_DIR) + "/vehicle_service", {"--hal", kHalPath});
+
+  Result<std::unique_ptr<SocketRemote>> remote = Status::NotFound;
+  ASSERT_TRUE(test::waitFor([&] {
+    remote = getServiceRemote(kVehicleServiceName);
+    return remote.ok();
+  }));
+  VehicleServiceProxy proxy(remote.take());
+  EXPECT_EQ(proxy.setProperty(PropertyId::Gear, int32_t{3}), Status::Ok);
 }

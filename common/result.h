@@ -17,6 +17,7 @@ enum class Status : int32_t {
   NotFound,
   InvalidArgument,
   ReadOnly,
+  PermissionDenied,    // the caller's uid may not do this
   NotSupported,
   IoError,
   DeadObject,          // the peer process is gone
@@ -33,6 +34,7 @@ inline const char* toString(Status s) {
     case Status::NotFound: return "NotFound";
     case Status::InvalidArgument: return "InvalidArgument";
     case Status::ReadOnly: return "ReadOnly";
+    case Status::PermissionDenied: return "PermissionDenied";
     case Status::NotSupported: return "NotSupported";
     case Status::IoError: return "IoError";
     case Status::DeadObject: return "DeadObject";

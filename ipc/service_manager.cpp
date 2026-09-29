@@ -2,6 +2,7 @@
 
 #include <thread>
 
+#include "common/log.h"
 #include "common/paths.h"
 
 namespace mini {
@@ -19,9 +20,14 @@ bool validName(const std::string& name) {
 }  // namespace
 
 Status ServiceManager::onTransact(uint32_t code, Parcel& data, Parcel& reply,
-                                  const CallerInfo& /*caller*/) {
+                                  const CallerInfo& caller) {
   switch (code) {
     case kAddService: {
+      if (!registrars_.allows(caller.uid)) {
+        logWarn("servicemanager", "uid %d (pid %d) may not register services",
+                static_cast<int>(caller.uid), static_cast<int>(caller.pid));
+        return Status::PermissionDenied;
+      }
       std::string name = data.readString();
       std::string path = data.readString();
       if (!data.ok()) return Status::BadParcel;

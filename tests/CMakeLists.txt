@@ -29,6 +29,7 @@ add_dependencies(hal_tests fake_vehicle_hal)
 mini_aosp_test(common_tests SOURCES common_test.cpp LIBS ipc)
 
 mini_aosp_test(ipc_tests SOURCES ipc_test.cpp LIBS ipc)
+add_dependencies(ipc_tests servicemanager)
 
 mini_aosp_test(service_tests SOURCES service_test.cpp LIBS vehicle_service_lib hal_loader)
 add_dependencies(service_tests servicemanager vehicle_service fake_vehicle_hal)

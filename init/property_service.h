@@ -22,14 +22,22 @@ enum PropertyTx : uint32_t {
   kListProps = 3,  // () -> (int32 n, [string key, string value] * n)
 };
 
-// Server side ("Bn"): unmarshals and calls the store.
+// May a client with this uid set this property through the service?
+//   ro.*, init.svc.*   never - only init itself writes them (directly, not through IPC)
+//   sys.*, debug.*     anyone (the "world-writable" namespaces)
+//   everything else    root or `ownerUid` (the user running init) only
+// Real AOSP decides with SELinux property contexts; this keeps the same shape.
+bool canSetProperty(const std::string& key, uid_t callerUid, uid_t ownerUid);
+
+// Server side ("Bn"): unmarshals, checks permission, calls the store.
 class PropertyServiceStub final : public IStub {
  public:
-  explicit PropertyServiceStub(PropertyStore& store) : store_(store) {}
+  PropertyServiceStub(PropertyStore& store, uid_t ownerUid) : store_(store), ownerUid_(ownerUid) {}
   Status onTransact(uint32_t code, Parcel& data, Parcel& reply, const CallerInfo& caller) override;
 
  private:
   PropertyStore& store_;
+  uid_t ownerUid_;
 };
 
 // Client side ("Bp").

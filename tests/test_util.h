@@ -116,6 +116,8 @@ class LoopbackRemote final : public IRemote {
 
     CallerInfo caller;
     caller.connection = 1;
+    caller.uid = uid_;
+    caller.pid = pid_;
     caller.sendEvent = [this](uint32_t evCode, const Parcel& args) {
       Parcel frame = makeEvent(evCode, args);
       Result<uint32_t> ev = parseEvent(frame);
@@ -135,9 +137,17 @@ class LoopbackRemote final : public IRemote {
 
   void disconnect() { stub_.onClientGone(1); }  // simulate the client dying
 
+  // Pretend to be another user (the real transport gets this from SO_PEERCRED).
+  void setCaller(uid_t uid, pid_t pid = 4242) {
+    uid_ = uid;
+    pid_ = pid;
+  }
+
  private:
   IStub& stub_;
   EventHandler handler_;
+  uid_t uid_ = ::geteuid();
+  pid_t pid_ = ::getpid();
 };
 
 }  // namespace mini::test

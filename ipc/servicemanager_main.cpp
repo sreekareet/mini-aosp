@@ -17,7 +17,8 @@ int main() {
   }
   EventLoop loop;
   quitOnSignal(loop, signals);
-  ServiceManager sm;
+  // Only the user that runs the system (and root) may register services.
+  ServiceManager sm(UidAllowList::only({::geteuid()}));
   RpcServer server(loop, listener.take(), sm);
   logInfo("servicemanager", "ready on %s", serviceManagerSocketPath().c_str());
   loop.run();

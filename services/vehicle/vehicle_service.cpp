@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "common/log.h"
+
 namespace mini {
 
 VehicleService::VehicleService(IVehicleHal& hal) : hal_(hal) {
@@ -67,6 +69,11 @@ Status VehicleStub::onTransact(uint32_t code, Parcel& data, Parcel& reply,
       return Status::Ok;
     }
     case kSetProperty: {
+      if (!writers_.allows(caller.uid)) {
+        logWarn("vehicle", "uid %d (pid %d) denied: not allowed to set properties",
+                static_cast<int>(caller.uid), static_cast<int>(caller.pid));
+        return Status::PermissionDenied;  // checked before parsing: don't work for the unauthorised
+      }
       auto id = static_cast<PropertyId>(data.readInt32());
       PropValue value = readValue(data);
       if (!data.ok()) return Status::BadParcel;

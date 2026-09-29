@@ -66,6 +66,7 @@ ordinary process, not PID 1, so there are no orphan children to reap and no moun
 
 - **Property service lives in init**, served with the same `RpcServer`, so properties reuse
   stage-2/3 code. Alternative: shared memory. Simpler is better here.
+- **Who may write what** is decided in stage 5 (`canSetProperty`): `ro.*` and `init.svc.*` can then only be written by init itself (from `init.conf`), never over IPC.
 - **Plain map, no locking.** The store is touched only on init's loop thread.
 - **One `setprop`-style rule set**: `[A-Za-z0-9._-]` keys up to 64 chars, values up to 92, `ro.*` write-once.
 - **Crash-loop protection**: 5 starts within 10 s -> `failed`, and stay failed. Alternative:

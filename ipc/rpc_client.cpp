@@ -30,18 +30,23 @@ struct RpcClient::State {
   std::optional<Parcel> reply;
   bool dead = false;
   EventHandler handler;
+  DeathRecipient deathRecipient;
 
   void onReadable();
   void markDead();
 };
 
 void RpcClient::State::markDead() {
+  DeathRecipient recipient;
   {
     std::lock_guard<std::mutex> lock(mu);
+    if (dead) return;
     dead = true;
+    recipient = std::move(deathRecipient);  // fires at most once
   }
-  cv.notify_all();
+  cv.notify_all();  // wake a caller blocked in transact(): it will see DeadObject
   loop.removeFd(fd);
+  if (recipient) recipient();  // outside the lock: the recipient may take its own locks
 }
 
 void RpcClient::State::onReadable() {
@@ -97,6 +102,13 @@ RpcClient::~RpcClient() { loop_.removeFd(state_->fd); }
 Status RpcClient::setEventHandler(EventHandler handler) {
   std::lock_guard<std::mutex> lock(state_->mu);
   state_->handler = std::move(handler);
+  return Status::Ok;
+}
+
+Status RpcClient::linkToDeath(DeathRecipient recipient) {
+  std::lock_guard<std::mutex> lock(state_->mu);
+  if (state_->dead) return Status::DeadObject;  // too late: report it instead of a callback
+  state_->deathRecipient = std::move(recipient);
   return Status::Ok;
 }
 

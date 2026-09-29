@@ -199,3 +199,91 @@ TEST(PropertyManagerTest, WorksAcrossProcesses) {
   // The real service ticks every 200 ms, so allow a little time.
   EXPECT_TRUE(test::waitFor([&] { return speeds.count() >= 2; }, 5000));
 }
+
+// Service restart, as seen by an app: the manager reconnects and subscriptions resume.
+TEST(PropertyManagerTest, ReconnectsAfterServiceRestartAndSubscriptionsResume) {
+  test::TempRunDir run;
+  test::ChildProcess sm(std::string(BIN_DIR) + "/servicemanager");
+  ASSERT_TRUE(test::waitFor([&] { return test::fileExists(serviceManagerSocketPath()); }));
+  auto startService = [&] {
+    return test::ChildProcess(std::string(BIN_DIR) + "/vehicle_service", {"--hal", kHalPath});
+  };
+  test::ChildProcess vehicle = startService();
+
+  std::unique_ptr<PropertyManager> pm;
+  ASSERT_TRUE(test::waitFor([&] {
+    auto r = PropertyManager::connect();
+    if (r.ok()) pm = r.take();
+    return r.ok();
+  }));
+
+  std::mutex mu;
+  std::vector<bool> transitions;  // false = died, true = back
+  pm->setConnectionCallback([&](bool connected) {
+    std::lock_guard<std::mutex> lock(mu);
+    transitions.push_back(connected);
+  });
+  auto transitionCount = [&] {
+    std::lock_guard<std::mutex> lock(mu);
+    return transitions.size();
+  };
+
+  Collector speeds;
+  ASSERT_TRUE(pm->subscribe(kSpeed, std::function<void(float)>([&](float v) { speeds.add(v); })).ok());
+  ASSERT_EQ(pm->set(kGear, int32_t{3}), Status::Ok);
+  ASSERT_TRUE(test::waitFor([&] { return speeds.count() >= 1; }));
+  ASSERT_TRUE(pm->isConnected());
+
+  // 1. The service crashes: the death notice arrives and calls fail cleanly.
+  vehicle.stop(SIGKILL);
+  ASSERT_TRUE(test::waitFor([&] { return transitionCount() >= 1; }));
+  EXPECT_FALSE(pm->isConnected());
+  EXPECT_EQ(pm->get(kGear).status(), Status::DeadObject);
+  EXPECT_EQ(pm->set(kGear, int32_t{1}), Status::DeadObject);
+  EXPECT_EQ(pm->subscribe(kFuelLevel, std::function<void(float)>([](float) {})).status(),
+            Status::DeadObject);
+
+  // 2. It comes back (init would do this): the manager reconnects on its own.
+  vehicle = startService();
+  // Wait for the callback itself: isConnected() turns true a moment *before* it is delivered.
+  ASSERT_TRUE(test::waitFor([&] { return transitionCount() >= 2; }, 10000));
+  EXPECT_TRUE(pm->isConnected());
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(transitions, (std::vector<bool>{false, true}));
+  }
+  auto gear = pm->get(kGear);
+  ASSERT_TRUE(gear.ok());
+  EXPECT_EQ(gear.value(), 0);  // the new process starts from defaults: state was lost
+
+  // 3. The old subscription works again without the app re-subscribing.
+  size_t before = speeds.count();
+  ASSERT_EQ(pm->set(kGear, int32_t{3}), Status::Ok);
+  EXPECT_TRUE(test::waitFor([&] { return speeds.count() > before; }, 5000));
+}
+
+TEST(PropertyManagerTest, UnsubscribingWhileDisconnectedSticks) {
+  test::TempRunDir run;
+  test::ChildProcess sm(std::string(BIN_DIR) + "/servicemanager");
+  ASSERT_TRUE(test::waitFor([&] { return test::fileExists(serviceManagerSocketPath()); }));
+  test::ChildProcess vehicle(std::string(BIN_DIR) + "/vehicle_service", {"--hal", kHalPath});
+  std::unique_ptr<PropertyManager> pm;
+  ASSERT_TRUE(test::waitFor([&] {
+    auto r = PropertyManager::connect();
+    if (r.ok()) pm = r.take();
+    return r.ok();
+  }));
+
+  Collector speeds;
+  auto sub = pm->subscribe(kSpeed, std::function<void(float)>([&](float v) { speeds.add(v); }));
+  ASSERT_TRUE(sub.ok());
+  vehicle.stop(SIGKILL);
+  ASSERT_TRUE(test::waitFor([&] { return !pm->isConnected(); }));
+  EXPECT_EQ(pm->unsubscribe(sub.value()), Status::Ok);  // fine while the service is down
+
+  vehicle = test::ChildProcess(std::string(BIN_DIR) + "/vehicle_service", {"--hal", kHalPath});
+  ASSERT_TRUE(test::waitFor([&] { return pm->isConnected(); }, 10000));
+  ASSERT_EQ(pm->set(kGear, int32_t{3}), Status::Ok);
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  EXPECT_EQ(speeds.count(), 0u);  // the removed subscription was not resurrected
+}

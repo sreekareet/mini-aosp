@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "ipc/access_policy.h"
 #include "ipc/remote.h"
 #include "ipc/stub.h"
 
@@ -24,9 +25,15 @@ enum ServiceManagerTx : uint32_t {
 // Server side (a "Bn" stub): holds the registry.
 class ServiceManager final : public IStub {
  public:
+  // Only `registrars` may add services (anyone may look them up). Otherwise any local
+  // process could hijack the name "vehicle". Real AOSP: SELinux `add` permission.
+  explicit ServiceManager(UidAllowList registrars = UidAllowList::anyone())
+      : registrars_(std::move(registrars)) {}
+
   Status onTransact(uint32_t code, Parcel& data, Parcel& reply, const CallerInfo& caller) override;
 
  private:
+  UidAllowList registrars_;
   std::map<std::string, std::string> services_;  // name -> socket path
 };
 

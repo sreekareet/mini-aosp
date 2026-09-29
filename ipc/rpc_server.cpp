@@ -17,7 +17,7 @@ RpcServer::RpcServer(EventLoop& loop, Listener listener, IStub& stub)
 
 RpcServer::~RpcServer() {
   loop_.removeFd(listener_.fd());
-  for (const auto& [id, conn] : clients_) loop_.removeFd(conn.fd());
+  for (const auto& [id, client] : clients_) loop_.removeFd(client.conn.fd());
 }
 
 void RpcServer::onListenerReadable() {
@@ -25,8 +25,11 @@ void RpcServer::onListenerReadable() {
     Result<Connection> c = listener_.accept();
     if (!c) return;  // WouldBlock: no more pending clients
     ConnectionId id = nextId_++;
-    auto it = clients_.emplace(id, c.take()).first;
-    loop_.addFd(it->second.fd(), EPOLLIN, [this, id](uint32_t) { onClientReadable(id); });
+    Client client{c.take(), PeerCredentials{}};
+    Result<PeerCredentials> peer = client.conn.peerCredentials();
+    if (peer) client.peer = peer.value();  // else stays "unknown": matches no allow-list
+    auto it = clients_.emplace(id, std::move(client)).first;
+    loop_.addFd(it->second.conn.fd(), EPOLLIN, [this, id](uint32_t) { onClientReadable(id); });
   }
 }
 
@@ -36,7 +39,8 @@ void RpcServer::onClientReadable(ConnectionId id) {
   if (!serveClient(id, it->second)) dropClient(id);
 }
 
-bool RpcServer::serveClient(ConnectionId id, Connection& conn) {
+bool RpcServer::serveClient(ConnectionId id, Client& client) {
+  Connection& conn = client.conn;
   Status fillStatus = conn.fill();
 
   // Answer every complete frame that has arrived (a client may pipeline several).
@@ -49,6 +53,8 @@ bool RpcServer::serveClient(ConnectionId id, Connection& conn) {
     Result<uint32_t> code = parseCall(call);
     CallerInfo caller;
     caller.connection = id;
+    caller.uid = client.peer.uid;
+    caller.pid = client.peer.pid;
     caller.sendEvent = [this, id](uint32_t evCode, const Parcel& args) {
       return sendEvent(id, evCode, args);
     };
@@ -64,7 +70,7 @@ bool RpcServer::serveClient(ConnectionId id, Connection& conn) {
 void RpcServer::dropClient(ConnectionId id) {
   auto it = clients_.find(id);
   if (it == clients_.end()) return;
-  loop_.removeFd(it->second.fd());
+  loop_.removeFd(it->second.conn.fd());
   clients_.erase(it);  // closes the socket
   stub_.onClientGone(id);
 }
@@ -73,7 +79,7 @@ Status RpcServer::sendEvent(ConnectionId id, uint32_t code, const Parcel& args) 
   auto it = clients_.find(id);
   if (it == clients_.end()) return Status::NotFound;
   // A dead or stuck client is not fatal here: its read side notices and drops it.
-  return it->second.sendFrame(makeEvent(code, args));
+  return it->second.conn.sendFrame(makeEvent(code, args));
 }
 
 }  // namespace mini

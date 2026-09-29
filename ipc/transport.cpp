@@ -44,6 +44,17 @@ Status Connection::setNonBlocking() {
   return Status::Ok;
 }
 
+Result<PeerCredentials> Connection::peerCredentials() const {
+  ucred cred = {};
+  socklen_t len = sizeof(cred);
+  if (::getsockopt(fd_.get(), SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) return Status::IoError;
+  PeerCredentials out;
+  out.pid = cred.pid;
+  out.uid = cred.uid;
+  out.gid = cred.gid;
+  return out;
+}
+
 Status Connection::sendFrame(const Parcel& payload) {
   if (payload.size() > kMaxFrameSize) return Status::InvalidArgument;
   // Header and payload go out in one buffer so frames from one sender never interleave.

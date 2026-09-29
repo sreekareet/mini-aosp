@@ -1,6 +1,7 @@
 // The service process: load the HAL, serve it over a socket, register with the
 // ServiceManager. Stand-in for system_server hosting CarService.
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 
@@ -16,9 +17,18 @@
 using namespace mini;
 
 int main(int argc, char** argv) {
+  // Options: --hal <path>, and --allow-writer <uid> (repeatable). By default only the
+  // user running the service (and root) may set properties; everyone may read.
   std::string halPath = defaultHalPath();
+  UidAllowList writers = UidAllowList::only({::geteuid()});
+  bool customWriters = false;
   for (int i = 1; i + 1 < argc; ++i) {
     if (std::strcmp(argv[i], "--hal") == 0) halPath = argv[i + 1];
+    if (std::strcmp(argv[i], "--allow-writer") == 0) {
+      if (!customWriters) writers = UidAllowList();  // an explicit list replaces the default
+      customWriters = true;
+      writers.add(static_cast<uid_t>(std::atoi(argv[i + 1])));
+    }
   }
   SignalFd signals({SIGINT, SIGTERM});  // first, before any thread exists
 
@@ -30,7 +40,7 @@ int main(int argc, char** argv) {
   Result<LoadedHal> hal = LoadedHal::load(halPath);
   if (!hal) return 1;
   VehicleService service(hal.value().hal());
-  VehicleStub stub(service);
+  VehicleStub stub(service, writers);
 
   std::string socketPath = serviceSocketPath(kVehicleServiceName);
   Result<Listener> listener = Listener::bind(socketPath);

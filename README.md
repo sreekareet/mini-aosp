@@ -3,79 +3,108 @@
 A small AOSP-style layered system in C++17 on plain Linux, built as a **learning
 project** to practise Android platform concepts (HAL, Binder-style IPC, system
 services, init, properties, Looper/Handler) and modern C++. It is not production
-code and not a claim of production experience.
+code and it is not a claim of production experience.
 
 The theme is a fake Vehicle HAL (speed, fuel, gear, HVAC) exposed through a service
-to small client apps.
+to small client apps, which matches an Android Automotive background.
 
-## Architecture (as of stage 4)
+Start with `docs/PROGRESS.md`, then read `docs/stages/stage-1.md` ... `stage-5.md`
+in order. Each stage has a reading order, interview questions and hands-on exercises.
 
-```
-   init        init: init.conf, service supervisor (restart, crash-loop limit), property service
-                  | starts / restarts                 getprop / setprop -> SystemProperties
-   apps        vehicle_cli (list/get/set/watch)     hal_demo (stage-1 demo, no IPC)
-                  |  PropertyManager: get/set/subscribe, PropertyKey<T>, loop thread
-   framework      |
-                  |  VehicleServiceProxy ("Bp") over RpcClient (calls + pushed events)
-   IPC         Parcel - frames - Unix sockets ---- servicemanager (name -> socket)
-                  |  VehicleStub ("Bn") on RpcServer, driven by EventLoop (epoll)
-   service     vehicle_service: VehicleService (subscriptions, 200 ms HAL tick)
-                  |  IVehicleHal (get/set/callback/poll)
-   HAL         LoadedHal (dlopen)  <-- libfake_vehicle_hal.so   (the "vendor" plugin)
-```
-
-The finished system (stages 1-5) will look like this; this diagram is filled in as
-stages land:
+## Architecture
 
 ```
- apps ── framework (PropertyManager) ── IPC (Unix sockets, Parcel, proxy/stub)
-                                              │
-              init ── servicemanager ── vehicle service ── HAL (.so)
+ init         init: reads init.conf, starts + restarts services (crash-loop limit),
+                    hosts the property service (getprop / setprop)
+                 | spawns / supervises
+ apps         vehicle_cli (list/get/set/watch)   getprop / setprop   hal_demo
+                 |                                  |
+ framework    PropertyManager                    SystemProperties
+              typed PropertyKey<T>, subscribe,
+              death detection + auto-reconnect
+                 | VehicleServiceProxy ("Bp")
+                 |   RpcClient: calls + pushed events, loop thread, linkToDeath
+ IPC          Parcel - framed Unix sockets - EventLoop (epoll) - SO_PEERCRED identity
+                 |                                  servicemanager: name -> socket
+                 | VehicleStub ("Bn")               (registration restricted by uid)
+ service      vehicle_service: VehicleService (subscriptions, permission check on writes)
+                 | IVehicleHal (get / set / change callback / poll)
+ HAL          LoadedHal (dlopen)  <-  libfake_vehicle_hal.so   (the "vendor" plugin)
 ```
+
+Processes at runtime: `init` -> `servicemanager`, `vehicle_service`; clients connect over
+sockets in `/tmp/mini-aosp-<uid>/` (override with `MINI_AOSP_RUN_DIR`).
 
 ## What maps to what in AOSP
 
 | Layer | AOSP equivalent | This project |
 |---|---|---|
-| Apps | Apps | `vehicle_cli` |
-| Framework | Managers (car property manager) | `PropertyManager` + listeners (**stage 3**) |
-| Services | system_server / CarService | `vehicle_service` process (**stage 2**, subscriptions **stage 3**) |
-| IPC | Binder + ServiceManager | Unix sockets, Parcel, proxy/stub (**stage 2**) |
-| HAL | HIDL/AIDL HALs | `IVehicleHal`, `.so` via `dlopen` (**stage 1**) |
-| Looper/Handler | Looper, HandlerThread | `EventLoop`, `LoopThread` (**stage 3**) |
-| Init | init + init.rc | `init`, `init.conf`, `Supervisor` (**stage 4**) |
-| Properties | system properties, `getprop`/`setprop` | `PropertyStore` + property service in init, `SystemProperties` (**stage 4**) |
+| Apps | Apps | `vehicle_cli`, `getprop`, `setprop` |
+| Framework | Managers (car property manager), `SystemProperties` | `PropertyManager` + listeners, `SystemProperties` |
+| Services | system_server / CarService | `vehicle_service` process |
+| IPC | Binder + ServiceManager | Unix sockets, `Parcel`, proxy/stub, `servicemanager` |
+| Identity / permissions | `getCallingUid`, `checkCallingPermission` | `SO_PEERCRED` + `UidAllowList` |
+| Death handling | `linkToDeath` / `binderDied` | `IRemote::linkToDeath`, `PropertyManager` reconnect |
+| Looper/Handler | `Looper`, `HandlerThread` | `EventLoop`, `LoopThread` |
+| HAL | HIDL/AIDL HALs (passthrough era: `dlopen`) | `IVehicleHal`, `.so` via `dlopen` |
+| Init | init + init.rc | `init`, `init.conf`, `Supervisor` |
+| Properties | system properties, property service | `PropertyStore` + property service in init |
+
+Each stage doc says where real AOSP is more complex.
 
 ## Build, run, test
+
+Requirements: g++ (C++17), CMake 3.16+, git. GoogleTest v1.17.0 is downloaded by CMake
+(use `-DMINI_AOSP_SYSTEM_GTEST=ON` with `libgtest-dev` if you are offline).
 
 ```
 cmake -S . -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure
-./build/bin/hal_demo
-
-# multi-process demo
-export MINI_AOSP_RUN_DIR=$(mktemp -d)
-./build/bin/servicemanager & ./build/bin/vehicle_service &
-./build/bin/vehicle_cli list
-./build/bin/vehicle_cli watch speed 5 &   # prints changes for 5 seconds
-./build/bin/vehicle_cli set gear 3         # the car accelerates: speed = 5, 10, 15...
-kill %1 %2
-
-# or let init run everything (restarts crashed services)
-export MINI_AOSP_RUN_DIR=$(mktemp -d)
-./build/bin/init &
-./build/bin/getprop
-kill -9 $(./build/bin/getprop init.svc_debug_pid.vehicle_service)
-./build/bin/vehicle_cli get gear      # works again after init restarts the service
-kill %1                               # orderly shutdown
 ```
 
-Options: `-DMINI_AOSP_SANITIZER=address` (ASan+UBSan) or `thread` (TSan), `-DMINI_AOSP_WERROR=OFF`,
-`-DMINI_AOSP_SYSTEM_GTEST=ON` (use `libgtest-dev` if the GoogleTest download fails).
+Run the whole system under `init`:
+
+```
+export MINI_AOSP_RUN_DIR=$(mktemp -d)
+./build/bin/init &                                  # starts servicemanager + vehicle_service
+./build/bin/getprop                                 # init.svc.*, sys.boot_completed, ro.*
+./build/bin/vehicle_cli list
+./build/bin/vehicle_cli watch speed 10 &            # prints changes for 10 s
+./build/bin/vehicle_cli set gear 3                  # the car accelerates: speed = 5, 10, 15 ...
+kill -9 $(./build/bin/getprop init.svc_debug_pid.vehicle_service)   # crash the service
+                                                    # watch shows [service died] / [service back]
+kill %1                                             # SIGTERM: init stops everything in order
+```
+
+Or start the pieces by hand: `./build/bin/servicemanager &  ./build/bin/vehicle_service &`.
+The stage-1 demo needs no IPC: `./build/bin/hal_demo`.
+
+Options: `-DMINI_AOSP_SANITIZER=address` (ASan+UBSan) or `thread` (TSan; use a separate
+build directory, e.g. `cmake -S . -B build-tsan -DMINI_AOSP_SANITIZER=thread`),
+`-DMINI_AOSP_WERROR=OFF` (warnings are errors by default).
+
+Tests: one GoogleTest executable per layer (`hal_tests`, `common_tests`, `ipc_tests`, `service_tests`,
+`framework_tests`, `init_tests`). They include end-to-end tests that spawn the real binaries in a temporary
+run directory, and all pass under normal, ASan/UBSan and TSan builds.
+
+## Repository layout
+
+```
+common/      Result/Status, UniqueFd, EventLoop, SignalFd, logging, paths (header-mostly "libutils")
+hal/         IVehicleHal, fake HAL plugin (.so), dlopen loader
+ipc/         Parcel, framing, wire format, RpcServer/RpcClient, ServiceManager, access policy
+services/    vehicle service: interface + proxy, implementation + stub, service process
+framework/   PropertyManager, SystemProperties
+init/        init, config parser, Supervisor, PropertyStore + property service
+apps/        CLI clients
+tests/       GoogleTest suites and helpers
+docs/        PROGRESS.md, DESIGN.md, EXERCISES.md, stages/stage-N.md
+```
 
 ## Docs
 
 - `docs/PROGRESS.md` - status and where to resume
-- `docs/DESIGN.md` - decisions and trade-offs
+- `docs/DESIGN.md` - one entry per stage: decision, alternatives, trade-off
 - `docs/stages/stage-N.md` - study material per stage
+- `docs/EXERCISES.md` - advanced exercises, including the optional concurrency stage
 - `CLAUDE.md` - the project brief

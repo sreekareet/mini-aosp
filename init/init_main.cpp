@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
   for (const auto& [k, v] : config.value().properties) props.set(k, v);
 
   // The property service, served from init's own loop.
-  PropertyServiceStub propertyStub(props);
+  PropertyServiceStub propertyStub(props, ::geteuid());
   Result<Listener> listener = Listener::bind(serviceSocketPath(kPropertyServiceName));
   if (!listener) return 1;
   RpcServer propertyServer(loop, listener.take(), propertyStub);

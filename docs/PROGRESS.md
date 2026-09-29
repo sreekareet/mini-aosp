@@ -8,8 +8,10 @@
 | 2. IPC: ServiceManager, Parcel, proxy/stub | done |
 | 3. Framework manager, epoll event loop | done |
 | 4. Mini init and property store | done |
-| 5. Death notification, reconnect, `SO_PEERCRED` | next |
-| 6. Optional concurrency deepening | not started (exercises only) |
+| 5. Death notification, reconnect, `SO_PEERCRED` | done |
+| 6. Optional concurrency deepening | not built - described as exercises in `docs/EXERCISES.md` |
+
+All six test suites pass in normal, ASan/UBSan and TSan builds, with `-Wall -Wextra -Wpedantic -Werror`.
 
 ## Build, run, test
 
@@ -17,37 +19,45 @@
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
-./build/bin/hal_demo
 
-# multi-process demo (stage 2)
-export MINI_AOSP_RUN_DIR=$(mktemp -d)
-./build/bin/servicemanager & ./build/bin/vehicle_service &
-./build/bin/vehicle_cli list
-./build/bin/vehicle_cli set gear 3
-./build/bin/vehicle_cli watch speed &     # then, in another terminal or after: 
-./build/bin/vehicle_cli set gear 3        # speed = 5, 10, 15, ...
-kill %1 %2 %3
-
-# whole system under init (stage 4)
-export MINI_AOSP_RUN_DIR=$(mktemp -d)
-./build/bin/init &                           # starts servicemanager + vehicle_service from build/etc/init.conf
-./build/bin/getprop                          # init.svc.*, sys.boot_completed, ...
-./build/bin/setprop sys.demo hello
-kill -9 $(./build/bin/getprop init.svc_debug_pid.vehicle_service)   # init restarts it
-kill %1                                      # SIGTERM: orderly shutdown
-
-# sanitizers (all tests pass under both)
-cmake -S . -B build-asan -DMINI_AOSP_SANITIZER=address && cmake --build build-asan -j
-cmake -S . -B build-tsan -DMINI_AOSP_SANITIZER=thread  && cmake --build build-tsan -j
-ctest --test-dir build-tsan --output-on-failure
+# sanitizers (use separate build directories)
+cmake -S . -B build-asan -DMINI_AOSP_SANITIZER=address && cmake --build build-asan -j && ctest --test-dir build-asan
+cmake -S . -B build-tsan -DMINI_AOSP_SANITIZER=thread  && cmake --build build-tsan -j && ctest --test-dir build-tsan
 ```
+
+Stage 1 demo (single process, no IPC):
+
+```
+./build/bin/hal_demo
+```
+
+The whole system under init (stages 2-5):
+
+```
+export MINI_AOSP_RUN_DIR=$(mktemp -d)            # isolated socket directory
+./build/bin/init &                               # starts servicemanager + vehicle_service (build/etc/init.conf)
+./build/bin/getprop                              # init.svc.*, sys.boot_completed, ro.*
+./build/bin/setprop sys.demo hello && ./build/bin/getprop sys.demo
+./build/bin/vehicle_cli list
+./build/bin/vehicle_cli watch speed 10 &         # stream changes for 10 seconds
+./build/bin/vehicle_cli set gear 3               # the car accelerates: speed = 5, 10, 15 ...
+kill -9 $(./build/bin/getprop init.svc_debug_pid.vehicle_service)   # init restarts it; watch prints
+                                                 # [service died] / [service back] and carries on
+kill %1                                          # SIGTERM to init: orderly shutdown of everything
+```
+
+Without init: `./build/bin/servicemanager &` then `./build/bin/vehicle_service &` (same env var), and use the CLIs.
 
 ## Where to resume
 
-Start Stage 5: (a) death notification - `IRemote::linkToDeath`, implemented in `RpcClient`
-when the loop sees EOF/HUP; `PropertyManager` reconnect worker thread with backoff that re-looks-up the
-service and re-subscribes existing listeners, plus a connection-state callback. (b) `SO_PEERCRED`:
-`Connection::peerCredentials()`, `CallerInfo{uid,pid}` filled in `RpcServer`, permission policy in the vehicle stub
-(writes) and property stub (`ro.`/`init.svc.` never via IPC, others by uid) and ServiceManager (`addService`).
-Then bump `ro.mini_aosp.stage` in `init/init.conf`, write `stage-5.md`, `docs/EXERCISES.md`, final README pass.
-Update this file at the end of each stage.
+Stages 1-5 are complete, committed and documented. Nothing is half-done.
+
+Suggested next steps for the owner:
+1. Read `docs/stages/stage-1.md` ... `stage-5.md` in order (each has a reading order, interview questions and exercises).
+2. Work through the per-stage exercises, then `docs/EXERCISES.md` (which also describes the optional Stage 6, concurrency
+   deepening: blocking queue, thread pool, TSan-clean).
+3. If you extend the code, keep the rule from `CLAUDE.md`: one stage at a time, tests first, commit as `stage N: ...`, update these docs.
+
+Known gaps (also listed in `docs/DESIGN.md`): ServiceManager restart does not trigger re-registration; the cross-uid
+permission path is tested via an allow-list rather than a real second user (no passwordless sudo in the dev environment);
+`init` is not PID 1; a HAL crash takes the whole vehicle service down (passthrough HAL).

@@ -1,6 +1,8 @@
 // Unix domain socket transport: length-prefixed frames, each frame one Parcel.
 #pragma once
 
+#include <sys/types.h>
+
 #include <string>
 #include <vector>
 
@@ -11,6 +13,12 @@
 namespace mini {
 
 inline constexpr size_t kMaxFrameSize = 1 << 20;  // reject absurd lengths from a bad peer
+
+struct PeerCredentials {
+  pid_t pid = -1;
+  uid_t uid = static_cast<uid_t>(-1);  // (uid_t)-1 = unknown; matches no allow-list entry
+  gid_t gid = static_cast<gid_t>(-1);
+};
 
 // One end of a connected stream socket. A stream has no message boundaries, so
 // every frame is [uint32 length][payload], and incoming bytes are buffered until
@@ -26,6 +34,10 @@ class Connection {
 
   int fd() const { return fd_.get(); }
   Status setNonBlocking();
+
+  // Who is on the other end? Asks the kernel (SO_PEERCRED), so the peer cannot lie.
+  // The values are those of the process that called connect() (or created the socketpair).
+  Result<PeerCredentials> peerCredentials() const;
 
   Status sendFrame(const Parcel& payload);
 

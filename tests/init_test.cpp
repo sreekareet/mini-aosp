@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <fstream>
 
 #include "common/paths.h"
@@ -44,7 +45,7 @@ TEST(PropertyStoreTest, RejectsBadKeysAndLongValues) {
 
 TEST(PropertyServiceTest, ProxyAndStubRoundTrip) {
   PropertyStore store;
-  PropertyServiceStub stub(store);
+  PropertyServiceStub stub(store, ::geteuid());
   PropertyServiceProxy proxy(std::make_unique<test::LoopbackRemote>(stub));
   ASSERT_EQ(proxy.set("sys.x", "hello"), Status::Ok);
   EXPECT_EQ(proxy.get("sys.x").value(), "hello");
@@ -53,6 +54,34 @@ TEST(PropertyServiceTest, ProxyAndStubRoundTrip) {
   auto all = proxy.list();
   ASSERT_TRUE(all.ok());
   EXPECT_EQ(all.value().size(), 1u);
+}
+
+TEST(PropertyPermissionTest, PolicyTable) {
+  const uid_t owner = 1000;
+  EXPECT_FALSE(canSetProperty("ro.build.type", owner, owner));   // never through IPC
+  EXPECT_FALSE(canSetProperty("ro.build.type", 0, owner));       // not even root
+  EXPECT_FALSE(canSetProperty("init.svc.vehicle_service", 0, owner));
+  EXPECT_TRUE(canSetProperty("sys.anything", 2000, owner));      // world-writable namespace
+  EXPECT_TRUE(canSetProperty("debug.trace", 2000, owner));
+  EXPECT_TRUE(canSetProperty("vendor.x", owner, owner));         // owner and root only
+  EXPECT_TRUE(canSetProperty("vendor.x", 0, owner));
+  EXPECT_FALSE(canSetProperty("vendor.x", 2000, owner));
+}
+
+TEST(PropertyPermissionTest, ServiceEnforcesThePolicyPerCaller) {
+  PropertyStore store;
+  PropertyServiceStub stub(store, /*ownerUid=*/1000);
+  auto remote = std::make_unique<test::LoopbackRemote>(stub);
+  test::LoopbackRemote* raw = remote.get();
+  PropertyServiceProxy proxy(std::move(remote));
+
+  raw->setCaller(2000);  // some other app
+  EXPECT_EQ(proxy.set("sys.ok", "1"), Status::Ok);
+  EXPECT_EQ(proxy.set("vendor.blocked", "1"), Status::PermissionDenied);
+  EXPECT_EQ(proxy.get("sys.ok").value(), "1");  // reading is open to everyone
+  raw->setCaller(1000);  // the owner
+  EXPECT_EQ(proxy.set("vendor.allowed", "1"), Status::Ok);
+  EXPECT_EQ(proxy.set("ro.forbidden", "1"), Status::PermissionDenied);
 }
 
 // ---- config parser ----------------------------------------------------------
@@ -152,14 +181,15 @@ TEST(InitTest, MissingBinaryEndsUpFailed) {
   ASSERT_TRUE(test::waitFor([&] { return prop("init.svc.ghost") == "failed"; }));
 }
 
-TEST(InitTest, SetpropThroughTheServiceAndReadOnlyEnforced) {
+TEST(InitTest, SetpropThroughTheServiceAndProtectedNamespacesRefused) {
   test::TempRunDir run;
   std::string conf = writeConfig(run, "setprop ro.fixed 1\n");
   test::ChildProcess init(std::string(BIN_DIR) + "/init", {conf});
   ASSERT_TRUE(test::waitFor([&] { return prop("sys.boot_completed") == "1"; }));
   EXPECT_EQ(SystemProperties::set("sys.custom", "abc"), Status::Ok);
   EXPECT_EQ(prop("sys.custom"), "abc");
-  EXPECT_EQ(SystemProperties::set("ro.fixed", "2"), Status::ReadOnly);
+  EXPECT_EQ(SystemProperties::set("ro.fixed", "2"), Status::PermissionDenied);  // ro.* is init-only
+  EXPECT_EQ(prop("ro.fixed"), "1");
 }
 
 TEST(InitTest, BadConfigMakesInitExitWithError) {
@@ -175,8 +205,9 @@ TEST(InitTest, BadConfigMakesInitExitWithError) {
   init.release();  // already reaped
 }
 
-// The shipped init.conf boots the whole system, and init revives a crashed service.
-TEST(InitTest, BootsTheWholeSystemAndRecoversFromAServiceCrash) {
+// The shipped init.conf boots the whole system. When the vehicle service crashes, init restarts
+// it and the *same* PropertyManager - subscription included - carries on by itself.
+TEST(InitTest, BootsTheWholeSystemAndAClientSurvivesAServiceCrash) {
   test::TempRunDir run;
   test::ChildProcess init(std::string(BIN_DIR) + "/init", {std::string(ETC_DIR) + "/init.conf"});
 
@@ -186,18 +217,23 @@ TEST(InitTest, BootsTheWholeSystemAndRecoversFromAServiceCrash) {
     if (r.ok()) pm = r.take();
     return r.ok();
   }));
-  ASSERT_EQ(pm->set(kGear, int32_t{2}), Status::Ok);
   EXPECT_EQ(prop("ro.build.type"), "learning");
+
+  std::atomic<int> speedEvents{0};
+  ASSERT_TRUE(pm->subscribe(kSpeed, std::function<void(float)>([&](float) { ++speedEvents; })).ok());
+  ASSERT_EQ(pm->set(kGear, int32_t{2}), Status::Ok);
 
   pid_t oldPid = std::stoi(prop("init.svc_debug_pid.vehicle_service"));
   ::kill(oldPid, SIGKILL);
 
-  // A fresh client finds the restarted service (state was lost with the process: gear is back to 0).
+  // Same manager object, no app code: state comes back (gear reset to 0 by the new process)...
   ASSERT_TRUE(test::waitFor([&] {
-    auto r = PropertyManager::connect();
-    if (!r.ok()) return false;
-    auto gear = r.value()->get(kGear);
+    auto gear = pm->get(kGear);
     return gear.ok() && gear.value() == 0;
   }));
   EXPECT_NE(std::stoi(prop("init.svc_debug_pid.vehicle_service")), oldPid);
+
+  // ...and so does the subscription: driving makes events flow again.
+  ASSERT_EQ(pm->set(kGear, int32_t{3}), Status::Ok);
+  EXPECT_TRUE(test::waitFor([&] { return speedEvents.load() > 0; }));
 }

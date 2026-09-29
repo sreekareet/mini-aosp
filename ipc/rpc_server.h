@@ -21,16 +21,21 @@ class RpcServer {
   RpcServer& operator=(const RpcServer&) = delete;
 
  private:
+  struct Client {
+    Connection conn;
+    PeerCredentials peer;  // fixed when the client connected
+  };
+
   void onListenerReadable();
   void onClientReadable(ConnectionId id);
-  bool serveClient(ConnectionId id, Connection& conn);  // false: drop this client
+  bool serveClient(ConnectionId id, Client& client);  // false: drop this client
   void dropClient(ConnectionId id);
   Status sendEvent(ConnectionId id, uint32_t code, const Parcel& args);
 
   EventLoop& loop_;
   Listener listener_;
   IStub& stub_;
-  std::map<ConnectionId, Connection> clients_;
+  std::map<ConnectionId, Client> clients_;
   ConnectionId nextId_ = 1;
 };
 

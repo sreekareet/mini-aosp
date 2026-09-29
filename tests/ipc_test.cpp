@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 #include <sys/socket.h>
 
+#include <atomic>
+
+#include "common/paths.h"
+#include "ipc/rpc_client.h"
 #include "ipc/service_manager.h"
 #include "test_util.h"
 
@@ -105,4 +109,66 @@ TEST(ServiceManagerTest, UnknownTransaction) {
   ServiceManager sm;
   test::LoopbackRemote remote(sm);
   EXPECT_EQ(remote.transact(999, Parcel()).status(), Status::UnknownTransaction);
+}
+
+TEST(ServiceManagerTest, OnlyAllowedUidsMayRegister) {
+  ServiceManager sm(UidAllowList::only({1000}));
+  auto remote = std::make_unique<test::LoopbackRemote>(sm);
+  test::LoopbackRemote* raw = remote.get();
+  ServiceManagerProxy proxy(std::move(remote));
+
+  raw->setCaller(2000);  // an unrelated user tries to take over a name
+  EXPECT_EQ(proxy.addService("vehicle", "/tmp/evil.sock"), Status::PermissionDenied);
+  EXPECT_EQ(proxy.getService("vehicle").status(), Status::NotFound);  // nothing was registered
+  raw->setCaller(1000);
+  EXPECT_EQ(proxy.addService("vehicle", "/run/vehicle.sock"), Status::Ok);
+  raw->setCaller(2000);
+  EXPECT_TRUE(proxy.getService("vehicle").ok());  // lookups are open to everyone
+  raw->setCaller(0);                              // root always passes
+  EXPECT_EQ(proxy.addService("other", "/run/other.sock"), Status::Ok);
+}
+
+TEST(AccessPolicyTest, DefaultAllowsOnlyRoot) {
+  UidAllowList none;  // forgetting to configure it fails closed
+  EXPECT_TRUE(none.allows(0));
+  EXPECT_FALSE(none.allows(1000));
+  EXPECT_FALSE(none.allows(static_cast<uid_t>(-1)));  // unknown identity
+  EXPECT_TRUE(UidAllowList::anyone().allows(1000));
+}
+
+TEST(ConnectionTest, PeerCredentialsComeFromTheKernel) {
+  SocketPair sp;
+  auto cred = sp.a->peerCredentials();
+  ASSERT_TRUE(cred.ok());
+  EXPECT_EQ(cred.value().uid, ::geteuid());  // both ends are this process
+  EXPECT_EQ(cred.value().pid, ::getpid());
+}
+
+// Death notification against a real process.
+TEST(RpcClientTest, DeathRecipientFiresWhenTheServerProcessDies) {
+  test::TempRunDir run;
+  test::ChildProcess sm(std::string(BIN_DIR) + "/servicemanager");
+  ASSERT_TRUE(test::waitFor([&] { return test::fileExists(serviceManagerSocketPath()); }));
+
+  LoopThread lt;
+  auto client = RpcClient::connect(lt.loop(), serviceManagerSocketPath());
+  ASSERT_TRUE(client.ok());
+
+  std::atomic<int> deaths{0};
+  ASSERT_EQ(client.value()->linkToDeath([&] { ++deaths; }), Status::Ok);
+  EXPECT_TRUE(client.value()->transact(kListServices, Parcel()).ok());  // alive and well
+  EXPECT_EQ(deaths, 0);
+
+  sm.stop(SIGKILL);
+  ASSERT_TRUE(test::waitFor([&] { return deaths.load() == 1; }));
+  EXPECT_EQ(client.value()->transact(kListServices, Parcel()).status(), Status::DeadObject);
+  EXPECT_EQ(client.value()->linkToDeath([] {}), Status::DeadObject);  // too late to link
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(deaths, 1);  // fired exactly once
+}
+
+TEST(RpcClientTest, SyncRemoteCannotLinkToDeath) {
+  SocketPair sp;
+  SocketRemote remote(std::move(*sp.a));
+  EXPECT_EQ(remote.linkToDeath([] {}), Status::NotSupported);
 }

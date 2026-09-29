@@ -78,6 +78,11 @@ int main(int argc, char** argv) {
       std::fflush(stdout);
     });
     if (!sub) return fail("subscribe", sub.status());
+    // The manager survives a service restart: tell the user, subscriptions resume by themselves.
+    pm.setConnectionCallback([](bool connected) {
+      std::printf("[%s]\n", connected ? "service back" : "service died");
+      std::fflush(stdout);
+    });
     if (argc == 4) alarm(static_cast<unsigned>(std::atoi(argv[3])));  // optional time limit
     signals.wait();  // Ctrl-C, SIGTERM, or the alarm
     pm.unsubscribe(sub.value());

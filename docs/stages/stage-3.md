@@ -105,7 +105,7 @@ process), batching of events, and permission checks per property.
 | `RpcClient` socket write side | the one caller holding `callMutex` | `callMutex` |
 | `RpcClient` socket read side + input buffer | loop thread only | none |
 | `ListenerTable` (proxy) | subscribing threads + loop thread | `ListenerTable::mu`; listeners called outside it |
-| `PropertyManager::subscriptions_` | any thread | `PropertyManager::mutex_` |
+| `PropertyManager::subscriptions_` | any thread | a mutex (reworked in stage 5: see `stage-5.md` for the final lock order) |
 
 Rules that make it work: (1) copy shared data under the lock and call user code
 after releasing it, so callbacks can (un)subscribe without deadlocking; (2) each object has exactly one
