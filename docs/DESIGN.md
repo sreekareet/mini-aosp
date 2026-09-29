@@ -37,3 +37,22 @@ made where the brief was ambiguous are marked **Assumption**.
   (real VHAL has them).
 - **Assumption: four properties** (speed, fuel level, gear, HVAC temperature);
   speed and fuel are read-only from the client's view.
+
+## Stage 2: IPC
+
+- **Unix stream sockets with length-prefixed frames** instead of emulating the Binder
+  driver. Alternatives: `SOCK_SEQPACKET` (keeps message boundaries for free, but less
+  familiar and awkward for large messages), shared memory. Trade-off: more copies, no
+  kernel-verified identity (stage 5 uses `SO_PEERCRED`).
+- **ServiceManager returns a socket path, not a proxied connection.** The address plays
+  the role of a Binder handle. Re-registering a name replaces it, so a restarted service takes over.
+- **Error model in the IPC layer: same `Status`/`Result<T>`.** The callee's `Status` is carried in the Reply frame and returned to the caller unchanged.
+- **Sticky-error `Parcel`** (like `std::istream`): read everything, check `ok()` once.
+  Alternative: `Result<T>` per read (explicit, but drowns the marshalling code).
+- **Proxy/stub written by hand** around one shared `IVehicleService` interface; no code generator (brief forbids it).
+- **Assumption: `IStub::onTransact` takes `Parcel&` (non-const)** because reading advances the cursor.
+- **Assumption: sockets live in `/tmp/mini-aosp-<uid>/`** (`MINI_AOSP_RUN_DIR` overrides; tests use a temp dir). Sockets are mode 0666 by design (see study notes).
+- **Assumption: a service registers *after* it starts listening**, and retries for up to 10 s if the ServiceManager is not up yet (real AOSP: `waitForService`).
+- **Single-threaded `poll()` server** for stage 2, as the brief requires; replaced by the epoll event loop in stage 3.
+- **Accepted limitation:** the ServiceManager never learns that a service died, so a stale
+  entry stays until the name is re-registered. Clients see `NotFound`/`DeadObject` when connecting. Stage 5 handles reconnect.

@@ -19,6 +19,10 @@ enum class Status : int32_t {
   ReadOnly,
   NotSupported,
   IoError,
+  DeadObject,          // the peer process is gone
+  BadParcel,           // malformed or truncated message
+  UnknownTransaction,  // the service does not know this method code
+  WouldBlock,          // non-blocking I/O: nothing to do right now
 };
 
 inline const char* toString(Status s) {
@@ -29,6 +33,10 @@ inline const char* toString(Status s) {
     case Status::ReadOnly: return "ReadOnly";
     case Status::NotSupported: return "NotSupported";
     case Status::IoError: return "IoError";
+    case Status::DeadObject: return "DeadObject";
+    case Status::BadParcel: return "BadParcel";
+    case Status::UnknownTransaction: return "UnknownTransaction";
+    case Status::WouldBlock: return "WouldBlock";
   }
   return "Unknown";
 }

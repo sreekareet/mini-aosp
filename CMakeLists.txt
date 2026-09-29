@@ -41,6 +41,8 @@ target_include_directories(mini_common INTERFACE ${PROJECT_SOURCE_DIR})
 target_link_libraries(mini_common INTERFACE Threads::Threads ${CMAKE_DL_LIBS})
 
 add_subdirectory(hal)
+add_subdirectory(ipc)
+add_subdirectory(services/vehicle)
 add_subdirectory(apps)
 
 enable_testing()
